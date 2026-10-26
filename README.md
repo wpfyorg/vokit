@@ -58,6 +58,21 @@ The generated PKGBUILD has a checksum for the generated source archive; it does 
 
 ## Build
 
+### macOS preview (Apple Silicon and Intel)
+
+The first **native macOS preview** has a SwiftUI window for vivo Office Kit QR pairing, connection state, and automatic incoming phone Share files. It reuses the Go network protocol backend, with no GTK installation needed. This is early compatibility work: screen mirroring, virtual camera/microphone, clipboard sync, notifications, file browsing, and tray/menu-bar integration are not yet available in the Mac UI. The QR rendezvous still uses the India-region vivo service and requires internet. Phone interoperability has not yet been confirmed on macOS.
+
+Install Go 1.23+ and Apple Command Line Tools (`xcode-select --install`). Install `qrencode` with Homebrew (`brew install qrencode`). Then run on a Mac:
+
+```sh
+make macos
+open build/VOkit.app
+```
+
+Click **Connect & Trust Scanned Phone**, scan the QR with vivo Office Kit on the phone, and approve its connection prompt. This button authorizes first-use trust of that scanned phone for the session. Connect the Mac and phone to the same network. Received files appear in `~/Downloads/Vivo Office Kit`; Mac pairing state is stored in `~/Library/Application Support/VOkit/Pairing` with private permissions. Quit/disconnect ends the session; no login item or background daemon is installed. To test the backend alone, run `go test ./...` or `go run ./cmd/vivolinux doctor`. The preview app is built locally and is not signed or notarized for distribution.
+
+### Linux
+
 Build dependencies: Go 1.23+ and Make. Runtime dependencies: Python 3 with PyGObject, GTK 4.16+, libadwaita 1.6+, GStreamer with base/good/bad/libav plugins, `qrencode`, `wl-clipboard` on Wayland, and PipeWire tools for optional audio sharing. Install the GStreamer GTK4 sink (`gst-plugin-gtk4` on Arch, `gstreamer1.0-gtk4` on Debian/Ubuntu) for the media viewer. Screen and camera preview also include a bounded RGB fallback. Tests use Xvfb and xauth. ADB/scrcpy remain optional command-line fallbacks.
 
 ```sh
