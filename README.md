@@ -69,7 +69,9 @@ make macos
 open build/VOkit.app
 ```
 
-Click **Connect & Trust Scanned Phone**, scan the QR with vivo Office Kit on the phone, and approve its connection prompt. This button authorizes first-use trust of that scanned phone for the session. Connect the Mac and phone to the same network. Received files appear in `~/Downloads/Vivo Office Kit`; Mac pairing state is stored in `~/Library/Application Support/VOkit/Pairing` with private permissions. Quit/disconnect ends the session; no login item or background daemon is installed. To test the backend alone, run `go test ./...` or `go run ./cmd/vivolinux doctor`. The preview app is built locally and is not signed or notarized for distribution.
+Click **Start pairing**, scan the QR with vivo Office Kit on the phone, and approve its connection prompt. Starting a pairing attempt authorizes first-use trust of that scanned phone for the session. Connect the Mac and phone to the same network. Received files appear in `~/Downloads/Vivo Office Kit`; Mac pairing state is stored in `~/Library/Application Support/VOkit/Pairing` with private permissions. Quit/disconnect ends the session; no login item or background daemon is installed. To test the backend alone, run `go test ./...` or `go run ./cmd/vivolinux doctor`. The preview app is built locally and is not signed or notarized for distribution.
+
+The Mac window now walks through QR scanning, phone approval, and connection status. Use **Start pairing**, then the Office Kit scanner on your phone. On first use macOS may request **Local Network** permission. Grant it; if that interrupts the first connection, choose **Try pairing again** and scan the newly generated QR. The previous code expires. If needed, verify access in **System Settings → Privacy & Security → Local Network** and ensure both devices can reach each other over Wi-Fi. The screen displays a safe explanation after errors; backend logs remain private in the pairing state directory.
 
 ### Linux
 
