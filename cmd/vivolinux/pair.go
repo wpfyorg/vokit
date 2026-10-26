@@ -179,6 +179,8 @@ func pairFailureCode(err error) string {
 		return "cancelled"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
+	case errors.Is(err, vivo.ErrPhoneNotListening):
+		return "phone_not_listening"
 	}
 	var networkError net.Error
 	if errors.As(err, &networkError) && networkError.Timeout() {
@@ -325,15 +327,32 @@ func runPair(ctx context.Context, args []string) error {
 		attempts++
 		pin := options.pin
 		var candidate *vivo.PhoneClient
-		if options.trustScanned {
-			candidate, err = vivo.NewFirstUsePhoneClient(address)
-		} else {
-			candidate, err = vivo.NewPhoneClient(address, pin)
+		// The scan result can arrive before Office Kit opens its LAN listener.
+		// Retry only refused connections that have not presented a certificate.
+		// After any certificate is seen, a failed negotiation requires a new QR.
+		retryUntil := time.Now().Add(5 * time.Second)
+		for {
+			if options.trustScanned {
+				candidate, err = vivo.NewFirstUsePhoneClient(address)
+			} else {
+				candidate, err = vivo.NewPhoneClient(address, pin)
+			}
+			if err != nil {
+				return err
+			}
+			capabilities, err = candidate.Negotiate(ctx, session)
+			if err == nil || candidate.CertificatePin() != "" ||
+				!errors.Is(err, vivo.ErrPhoneNotListening) || time.Now().After(retryUntil) {
+				break
+			}
+			candidate.Close()
+			candidate = nil
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(300 * time.Millisecond):
+			}
 		}
-		if err != nil {
-			return err
-		}
-		capabilities, err = candidate.Negotiate(ctx, session)
 		if options.trustScanned && candidate.CertificatePin() != "" {
 			fmt.Fprintln(os.Stderr, "Explicit first-use trust: pinned actual phone connection certificate:", candidate.CertificatePin())
 			stage("scanned_phone_certificate_pinned")

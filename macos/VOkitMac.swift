@@ -340,6 +340,8 @@ final class PairSession: NSObject, ObservableObject {
                 failureHint = "The scanned phone did not provide a reachable Wi-Fi address."
             case "network_or_tls":
                 failureHint = "The secure connection could not reach the phone. Check Wi-Fi and Local Network access."
+            case "phone_not_listening":
+                failureHint = "The phone received the scan but is not accepting Wi-Fi connections. Keep Office Kit open on the phone and scan a new code."
             case "certificate_trust":
                 failureHint = "Phone identity verification failed. Start a fresh pairing attempt."
             case "phone_rejected_or_incompatible":

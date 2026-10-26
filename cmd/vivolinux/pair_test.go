@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"vivolinux/internal/vivo"
 )
 
 func TestPairRejectsInvalidOptionsBeforeNetwork(t *testing.T) {
@@ -43,6 +45,7 @@ func TestPairFailureCodesAreBoundedAndSecretFree(t *testing.T) {
 	}{
 		{"cancelled", context.Canceled, "cancelled"},
 		{"deadline", context.DeadlineExceeded, "timeout"},
+		{"phone listener not ready", vivo.ErrPhoneNotListening, "phone_not_listening"},
 		{"network timeout", &net.DNSError{Err: "private-name.example", IsTimeout: true}, "timeout"},
 		{"TLS failure", errors.New("phone TLS/network request failed; secret=never-log"), "network_or_tls"},
 		{"TLS failure mentions certificate pin", errors.New("phone TLS/network request failed; verify its certificate pin and reachability"), "network_or_tls"},
