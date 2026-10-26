@@ -186,7 +186,7 @@ func pairFailureCode(err error) string {
 	}
 	message := err.Error()
 	switch {
-	case strings.Contains(message, "certificate changed") || strings.Contains(message, "certificate pin"):
+	case strings.Contains(message, "certificate changed"):
 		return "certificate_trust"
 	case strings.Contains(message, "TLS/network") || strings.Contains(message, "network/TLS") || strings.Contains(message, "WebSocket"):
 		return "network_or_tls"

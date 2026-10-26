@@ -45,6 +45,7 @@ func TestPairFailureCodesAreBoundedAndSecretFree(t *testing.T) {
 		{"deadline", context.DeadlineExceeded, "timeout"},
 		{"network timeout", &net.DNSError{Err: "private-name.example", IsTimeout: true}, "timeout"},
 		{"TLS failure", errors.New("phone TLS/network request failed; secret=never-log"), "network_or_tls"},
+		{"TLS failure mentions certificate pin", errors.New("phone TLS/network request failed; verify its certificate pin and reachability"), "network_or_tls"},
 		{"rendezvous TLS", errors.New("scan result: rendezvous network/TLS request failed"), "network_or_tls"},
 		{"pin mismatch", errors.New("phone certificate changed; pinned certificate mismatch"), "certificate_trust"},
 		{"rejection", errors.New("phone rejected version negotiation"), "phone_rejected_or_incompatible"},
