@@ -131,6 +131,7 @@ final class PairSession: NSObject, ObservableObject {
         guard let cli = Bundle.main.resourceURL?.appendingPathComponent("vivolinux"),
               fileManager.isExecutableFile(atPath: cli.path) else {
             status = "VOkit backend missing. Rebuild the app."
+            failureHint = status
             phase = .failed
             running = false
             return
@@ -144,6 +145,7 @@ final class PairSession: NSObject, ObservableObject {
                                             attributes: [.posixPermissions: 0o700])
         } catch {
             status = "Cannot prepare private pairing data."
+            failureHint = status
             phase = .failed
             running = false
             return
@@ -158,6 +160,7 @@ final class PairSession: NSObject, ObservableObject {
             guard let helper = Bundle.main.resourceURL?.appendingPathComponent("VOkitHelper.app/Contents/MacOS/VOkitHelper"),
                   fileManager.isExecutableFile(atPath: helper.path) else {
                 status = "VOkit desktop helper missing. Rebuild the app."
+                failureHint = status
                 phase = .failed
                 running = false
                 return
@@ -200,6 +203,7 @@ final class PairSession: NSObject, ObservableObject {
             try task.run()
         } catch {
             status = "Unable to start the VOkit backend."
+            failureHint = status
             phase = .failed
             running = false
             return
@@ -431,7 +435,7 @@ struct ContentView: View {
         case .scanning: return "Scan this QR code"
         case .connecting: return "Connecting to phone"
         case .approval: return "Approve on your phone"
-        case .connected: return "Phone connected"
+        case .connected: return "Your phone is ready"
         case .stopping: return "Disconnecting"
         case .failed: return "Pairing interrupted"
         }
@@ -451,7 +455,7 @@ struct ContentView: View {
         case .scanning: return "Open Office Kit on your phone and scan the code below."
         case .connecting: return "Code scanned. Locating your phone on the local network…"
         case .approval: return "Accept the connection request in Office Kit to continue."
-        case .connected: return "Your phone is ready for file sharing and live previews."
+        case .connected: return "Explore your files, mirror your screen, or use the phone camera."
         case .stopping: return "Ending the active connection…"
         case .failed: return "The last attempt ended before a connection was established."
         }
@@ -465,7 +469,8 @@ struct ContentView: View {
                 .frame(width: 1)
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    Text("PHONE CONNECTION")
+                    Text(selectedTab == .settings ? "PREFERENCES" :
+                         selectedTab == .connection ? "DEVICE OVERVIEW" : "PHONE TOOLS")
                         .font(.system(size: 10, weight: .semibold))
                         .tracking(1.6)
                         .foregroundStyle(.secondary)
@@ -479,31 +484,33 @@ struct ContentView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                 }
-                .padding(.bottom, 24)
+                .padding(.bottom, 18)
                 Text(heading)
-                    .font(.system(size: 29, weight: .bold, design: .rounded))
-                    .padding(.bottom, 8)
+                    .font(.system(size: 27, weight: .bold, design: .rounded))
+                    .padding(.bottom, 7)
                 Text(description)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Group {
                     switch selectedTab {
-                    case .connection: connectionCard
+                    case .connection:
+                        if session.connected { connectedDashboard }
+                        else { connectionCard }
                     case .files: PhoneFilesView(connected: session.connected)
                     case .mirror: PhoneMediaView(connected: session.connected, mode: .screen)
                     case .camera: PhoneMediaView(connected: session.connected, mode: .camera)
                     case .settings: settingsCard
                     }
                 }
-                .padding(.top, 20)
+                .padding(.top, 22)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             }
-            .padding(30)
+            .padding(26)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 900, idealWidth: 950, minHeight: 610, idealHeight: 660)
+        .frame(minWidth: 870, idealWidth: 950, minHeight: 600, idealHeight: 660)
         .background(Color(nsColor: .windowBackgroundColor))
         .onChange(of: session.connected) { isConnected in
             if !isConnected && selectedTab != .settings { selectedTab = .connection }
@@ -515,26 +522,26 @@ struct ContentView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 10) {
-                Image(systemName: "iphone.radiowaves.left.and.right")
-                    .font(.system(size: 20))
-                    .foregroundStyle(.tint)
-                    .frame(width: 42, height: 42)
-                    .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("VOkit")
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                    Text("for macOS")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
+                        Image(systemName: "iphone.radiowaves.left.and.right")
+                            .font(.system(size: 19))
+                            .foregroundStyle(.tint)
+                            .frame(width: 40, height: 40)
+                            .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("VOkit")
+                                .font(.system(size: 19, weight: .bold, design: .rounded))
+                            Text("for macOS")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    .padding(.bottom, 34)
+                    .padding(.bottom, 30)
 
                     Text("WORKSPACE")
-                .font(.system(size: 10, weight: .bold))
-                .tracking(1.2)
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 12)
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(1.2)
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 12)
                     tabButton(.connection, title: "Connection", icon: "iphone.radiowaves.left.and.right")
                     tabButton(.files, title: "Phone files", icon: "folder")
                     tabButton(.mirror, title: "Mirror screen", icon: "rectangle.on.rectangle")
@@ -542,20 +549,20 @@ struct ContentView: View {
                     tabButton(.settings, title: "Settings", icon: "gearshape")
 
                     if !session.connected && selectedTab == .connection {
-                Divider().padding(.vertical, 20)
-                Text("PAIRING STEPS")
-                    .font(.system(size: 10, weight: .bold))
-                    .tracking(1.2)
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 16)
-                PairStep(index: 1, title: "Open Office Kit", description: "Use your phone's Office Kit scanner.", progress: progress)
-                    .padding(.bottom, 18)
-                PairStep(index: 2, title: "Scan and connect", description: "Keep both devices on the same Wi-Fi.", progress: progress)
-                    .padding(.bottom, 18)
-                PairStep(index: 3, title: "Approve access", description: "Accept the prompt on your phone.", progress: progress)
+                        Divider().padding(.vertical, 20)
+                        Text("PAIRING STEPS")
+                            .font(.system(size: 10, weight: .bold))
+                            .tracking(1.2)
+                            .foregroundStyle(.secondary)
+                            .padding(.bottom, 16)
+                        PairStep(index: 1, title: "Open Office Kit", description: "Use your phone's Office Kit scanner.", progress: progress)
+                            .padding(.bottom, 18)
+                        PairStep(index: 2, title: "Scan and connect", description: "Keep both devices on the same Wi-Fi.", progress: progress)
+                            .padding(.bottom, 18)
+                        PairStep(index: 3, title: "Approve access", description: "Accept the prompt on your phone.", progress: progress)
                     }
                 }
-                .padding(22)
+                .padding(19)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider()
@@ -564,9 +571,9 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
-            .padding(20)
+            .padding(19)
         }
-        .frame(width: 252)
+        .frame(width: 236)
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
@@ -575,7 +582,7 @@ struct ContentView: View {
             Label(title, systemImage: icon)
                 .font(.system(size: 13, weight: selectedTab == tab ? .semibold : .medium))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 10)
+                .padding(.vertical, 9)
                 .padding(.horizontal, 12)
                 .background(selectedTab == tab ? Color.accentColor.opacity(0.12) : .clear,
                             in: RoundedRectangle(cornerRadius: 9))
@@ -586,33 +593,140 @@ struct ContentView: View {
         .padding(.bottom, 4)
     }
 
+    private var connectedDashboard: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .center, spacing: 16) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 34))
+                    .foregroundStyle(.green)
+                    .frame(width: 57, height: 57)
+                    .background(Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(session.recentTransfer ? "File received" : "Connected and secure")
+                        .font(.system(size: 16, weight: .semibold))
+                    Text(session.recentTransfer ? "Your new file is in Received files." :
+                         "Your vivo phone is connected over local Wi-Fi.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button("Disconnect") { session.disconnect() }
+                    .controlSize(.small)
+            }
+            .padding(20)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.75), in: RoundedRectangle(cornerRadius: 17))
+            .overlay(RoundedRectangle(cornerRadius: 17).strokeBorder(Color.primary.opacity(0.07)))
+
+            Text("QUICK ACTIONS")
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(1.3)
+                .foregroundStyle(.secondary)
+
+            HStack(alignment: .top, spacing: 12) {
+                dashboardAction(.files, title: "Phone files", detail: "Browse, send and save files", symbol: "folder.fill")
+                dashboardAction(.mirror, title: "Mirror screen", detail: "View and control your phone", symbol: "rectangle.on.rectangle")
+                dashboardAction(.camera, title: "Phone camera", detail: "See a live camera preview", symbol: "camera.fill")
+            }
+
+            HStack(spacing: 10) {
+                Image(systemName: "tray.and.arrow.down")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Received files")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Files sent from your phone are saved in Downloads.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Open folder") { session.openDownloads() }
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, 4)
+
+            Label("Screen and camera sharing may require approval on your phone.", systemImage: "lock.shield")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func dashboardAction(_ tab: DesktopTab, title: String, detail: String, symbol: String) -> some View {
+        Button { selectedTab = tab } label: {
+            VStack(alignment: .leading, spacing: 11) {
+                HStack {
+                    Image(systemName: symbol)
+                        .font(.system(size: 21))
+                        .foregroundStyle(.tint)
+                        .frame(width: 43, height: 43)
+                        .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
+                    Spacer(minLength: 0)
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, minHeight: 129, alignment: .topLeading)
+            .padding(15)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.70), in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.08)))
+            .contentShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .help(detail)
+    }
+
     private var settingsCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Phone permissions")
-                .font(.headline)
-            Toggle("Synchronize plain-text clipboard", isOn: Binding(get: { pairClipboard }, set: { pairClipboard = $0 }))
-            Text("Copies plain text between the Mac and phone while connected. Maximum 64 KiB per item.")
-                .font(.caption).foregroundStyle(.secondary)
-            Toggle("Forward phone notifications", isOn: Binding(get: { pairNotifications }, set: { pairNotifications = $0 }))
-            Text("Shows phone and connection notifications in macOS Notification Center after phone permission.")
-                .font(.caption).foregroundStyle(.secondary)
-            if session.running {
-                Label("Reconnect to apply these settings.", systemImage: "info.circle")
+        VStack(alignment: .leading, spacing: 19) {
+            Label("Sharing permissions", systemImage: "hand.raised")
+                .font(.system(size: 15, weight: .semibold))
+            VStack(alignment: .leading, spacing: 5) {
+                Toggle("Synchronize text clipboard", isOn: Binding(get: { pairClipboard }, set: { pairClipboard = $0 }))
+                Text("Copies plain text between Mac and phone, up to 64 KiB per item.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Divider()
-            Text("Local Network access")
-                .font(.headline)
-            Text("VOkit checks Local Network access before generating a QR code. macOS prompts the first time; if access is already allowed, no new popup appears.")
-                .font(.caption).foregroundStyle(.secondary)
-            Button("Open Local Network settings") {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!)
+            VStack(alignment: .leading, spacing: 5) {
+                Toggle("Forward phone notifications", isOn: Binding(get: { pairNotifications }, set: { pairNotifications = $0 }))
+                Text("Show phone notifications in macOS Notification Center after phone approval.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            Spacer()
+            if session.running {
+                Label("Changes take effect on your next connection.", systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            Label("Local Network access", systemImage: "wifi")
+                .font(.system(size: 15, weight: .semibold))
+            Text("macOS requests access when you pair for the first time. Once allowed, it won't ask again. If pairing can't find your phone, check access in System Settings.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork") {
+                    NSWorkspace.shared.open(url)
+                }
+            } label: {
+                Label("Open Local Network settings", systemImage: "arrow.up.right.square")
+            }
+            .controlSize(.small)
         }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.65), in: RoundedRectangle(cornerRadius: 18))
+        .padding(22)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.65), in: RoundedRectangle(cornerRadius: 17))
+        .overlay(RoundedRectangle(cornerRadius: 17).strokeBorder(Color.primary.opacity(0.07)))
     }
 
     private var connectionCard: some View {

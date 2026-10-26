@@ -17,15 +17,23 @@ struct PhoneMediaView: View {
     @ObservedObject private var model = PhoneMediaModel.shared
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             if mode == .camera {
-                Picker("Camera", selection: $model.facing) {
-                    Text("Rear camera").tag("rear")
-                    Text("Front camera").tag("front")
+                HStack(spacing: 12) {
+                    Text("CAMERA")
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(1.2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Picker("Camera", selection: $model.facing) {
+                        Text("Rear").tag("rear")
+                        Text("Front").tag("front")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 170)
+                    .disabled(!connected)
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 250)
-                .disabled(!connected)
             }
             GeometryReader { geometry in
                 H264Preview(layer: model.layer)
@@ -42,38 +50,74 @@ struct PhoneMediaView: View {
                                 model.pointer(at: value.location, in: geometry.size, ending: true)
                             }
                         })
+                    .overlay {
+                        if model.status != "Live phone video" {
+                            VStack(spacing: 12) {
+                                Image(systemName: connected ? (mode == .screen ? "rectangle.on.rectangle" : "camera") : "iphone.slash")
+                                    .font(.system(size: 29, weight: .light))
+                                    .foregroundStyle(.white.opacity(0.75))
+                                Text(model.status)
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.white)
+                                    .multilineTextAlignment(.center)
+                                if connected {
+                                    Text(mode == .screen ? "Approve screen sharing in Office Kit on your phone." :
+                                         "Allow camera access in Office Kit on your phone.")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.white.opacity(0.65))
+                                        .multilineTextAlignment(.center)
+                                }
+                            }
+                            .padding(24)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Color.black.opacity(0.87))
+                            .allowsHitTesting(false)
+                        }
+                    }
             }
-                .aspectRatio(mode == .screen ? Double(model.videoWidth) / Double(model.videoHeight) : 16.0 / 9.0,
-                             contentMode: .fit)
+                .frame(minHeight: 245, maxHeight: mode == .screen ? .infinity : 360)
+                .aspectRatio(mode == .camera ? 16.0 / 9.0 : nil, contentMode: .fit)
                 .background(.black)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
             if mode == .screen {
-                HStack(spacing: 12) {
-                    Button("Back") { model.navigate(key: 4) }
-                    Button("Home") { model.navigate(key: 3) }
-                    Button("Recent apps") { model.navigate(key: 187) }
+                HStack(spacing: 8) {
+                    Button { model.navigate(key: 4) } label: { Label("Back", systemImage: "arrow.uturn.backward") }
+                    Button { model.navigate(key: 3) } label: { Label("Home", systemImage: "house") }
+                    Button { model.navigate(key: 187) } label: { Label("Recents", systemImage: "square.on.square") }
+                    Spacer(minLength: 8)
+                    Text("QUALITY")
+                        .font(.system(size: 10, weight: .medium))
+                        .tracking(1)
+                        .foregroundStyle(.secondary)
                     Picker("Quality", selection: Binding(get: { model.quality }, set: { model.setQuality($0) })) {
                         Text("Auto").tag("auto")
                         Text("480p").tag("480p")
                         Text("720p").tag("720p")
                         Text("1080p").tag("1080p")
                     }
-                    .frame(width: 150)
-                    Spacer(minLength: 0)
+                    .labelsHidden()
+                    .frame(width: 116)
                 }
+                .controlSize(.small)
                 .disabled(!connected || !model.inputReady)
-                HStack {
-                    TextField("Type text on phone", text: $model.textToSend)
+                HStack(spacing: 8) {
+                    TextField("Type a message to send to your phone", text: $model.textToSend)
                         .onSubmit { model.sendText() }
-                    Button("Send text") { model.sendText() }
+                    Button { model.sendText() } label: { Label("Send text", systemImage: "arrow.up") }
+                        .controlSize(.small)
                         .disabled(model.textToSend.isEmpty || !connected || !model.inputReady)
                 }
                 .disabled(!connected || !model.inputReady)
             }
-            Text(model.status)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if model.status == "Live phone video" {
+                Label(mode == .screen ? "Live screen · Click or drag to control your phone" : "Live camera preview", systemImage: "circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Label("Phone approval may be required to start the preview.", systemImage: "lock.shield")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .onAppear { model.configure(connected: connected, mode: mode) }
         .onChange(of: connected) { value in model.configure(connected: value, mode: mode) }
@@ -199,7 +243,7 @@ private final class PhoneMediaModel: ObservableObject {
     private func report(_ message: String, generation run: Int) {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.generation == run else { return }
-            self.status = message
+            if self.status != message { self.status = message }
         }
     }
 

@@ -168,7 +168,7 @@ struct PhoneFilesView: View {
                         Text(emptyTitle).font(.headline)
                         Text(emptyMessage).font(.callout).foregroundStyle(.secondary)
                             .multilineTextAlignment(.center).frame(maxWidth: 320)
-                        if connected && !busy && status.isEmpty {
+                        if connected && !busy {
                             Button("Refresh") { loadFiles(reset: true) }.padding(.top, 3)
                         }
                     }
