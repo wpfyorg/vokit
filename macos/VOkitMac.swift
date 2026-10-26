@@ -1,4 +1,5 @@
 import AppKit
+import dnssd
 import Foundation
 import Network
 import SwiftUI
@@ -33,6 +34,7 @@ final class PairSession: NSObject, ObservableObject {
     private var pairingDirectory: URL?
     private var disconnectRequested = false
     private var localNetworkBrowser: NWBrowser?
+    private var localNetworkListener: NWListener?
     private var localNetworkTimeout: DispatchWorkItem?
 
     func connect(clipboard: Bool = false, notifications: Bool = false) {
@@ -44,21 +46,52 @@ final class PairSession: NSObject, ObservableObject {
         status = "Checking Local Network access…"
         running = true
 
-        // Browsing for a Bonjour service causes the system privacy prompt before
-        // a pairing QR is generated. No service needs to be running on the LAN.
-        let browser = NWBrowser(for: .bonjour(type: "_vokit-auth._tcp", domain: nil), using: .tcp)
+        // A ready browser only means discovery started; it does not prove that
+        // Local Network access was granted. Publish a temporary service and
+        // wait until the browser actually discovers it before showing the QR.
+        let serviceName = "vokit-" + UUID().uuidString
+        let serviceType = "_vokit-auth._tcp"
+        let listener: NWListener
+        do {
+            listener = try NWListener(using: .tcp, on: .any)
+        } catch {
+            failNetworkPreflight("Cannot start Local Network permission check. Check Wi-Fi and retry.")
+            return
+        }
+        listener.service = NWListener.Service(name: serviceName, type: serviceType)
+        listener.newConnectionHandler = { connection in connection.cancel() }
+        localNetworkListener = listener
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
+            DispatchQueue.main.async {
+                guard let self, let listener, self.localNetworkListener === listener else { return }
+                if case .failed = state {
+                    self.failNetworkPreflight("Local Network service could not start. Check Wi-Fi and Local Network access, then retry.")
+                }
+            }
+        }
+        let browser = NWBrowser(for: .bonjour(type: serviceType, domain: nil), using: .tcp)
         localNetworkBrowser = browser
+        browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
+            DispatchQueue.main.async {
+                guard let self, let browser, self.localNetworkBrowser === browser else { return }
+                guard results.contains(where: { result in
+                    if case .service(let name, _, _, _) = result.endpoint { return name == serviceName }
+                    return false
+                }) else { return }
+                self.cancelNetworkPreflight()
+                self.startPairing(clipboard: clipboard, notifications: notifications)
+            }
+        }
         browser.stateUpdateHandler = { [weak self, weak browser] state in
             DispatchQueue.main.async {
                 guard let self, let browser, self.localNetworkBrowser === browser else { return }
                 switch state {
-                case .ready:
-                    self.cancelNetworkPreflight()
-                    self.startPairing(clipboard: clipboard, notifications: notifications)
+                case .waiting(.dns(let code)) where code == kDNSServiceErr_PolicyDenied:
+                    self.failNetworkPreflight("Local Network access was denied. Enable VOkit in System Settings → Privacy & Security → Local Network, then retry.")
                 case .failed(let error):
                     self.failNetworkPreflight("Local Network access failed (\(error.localizedDescription)). Enable it in System Settings → Privacy & Security → Local Network.")
                 default:
-                    // .waiting can mean macOS is displaying its privacy prompt.
+                    // Ready does not imply permission; the service must appear.
                     break
                 }
             }
@@ -69,6 +102,7 @@ final class PairSession: NSObject, ObservableObject {
         }
         localNetworkTimeout = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + 25, execute: timeout)
+        listener.start(queue: .global(qos: .userInitiated))
         browser.start(queue: .global(qos: .userInitiated))
     }
 
@@ -77,6 +111,8 @@ final class PairSession: NSObject, ObservableObject {
         localNetworkTimeout = nil
         localNetworkBrowser?.cancel()
         localNetworkBrowser = nil
+        localNetworkListener?.cancel()
+        localNetworkListener = nil
     }
 
     private func failNetworkPreflight(_ message: String) {
@@ -463,15 +499,6 @@ struct ContentView: View {
                 .padding(.top, 20)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                HStack(spacing: 6) {
-                    Image(systemName: "lock.shield")
-                    Text("Local Wi-Fi pairing · macOS 13+")
-                    Spacer()
-                    Text("macOS")
-                        .fontWeight(.semibold)
-                }
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
             }
             .padding(30)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -576,7 +603,7 @@ struct ContentView: View {
             Divider()
             Text("Local Network access")
                 .font(.headline)
-            Text("VOkit checks Local Network permission before generating a QR code. On first use, approve the macOS privacy prompt.")
+            Text("VOkit checks Local Network access before generating a QR code. macOS prompts the first time; if access is already allowed, no new popup appears.")
                 .font(.caption).foregroundStyle(.secondary)
             Button("Open Local Network settings") {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!)
