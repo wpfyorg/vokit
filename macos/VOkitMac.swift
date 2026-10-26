@@ -389,7 +389,7 @@ private struct PairStep: View {
 }
 
 private enum DesktopTab: String {
-    case connection, files, mirror, camera, settings
+    case connection, files, camera, settings
 }
 
 @MainActor
@@ -405,6 +405,7 @@ private final class MacNavigationState: ObservableObject {
 }
 
 struct ContentView: View {
+    @Environment(\.openWindow) private var openWindow
     @ObservedObject private var session = PairSession.shared
     @ObservedObject private var navigation = MacNavigationState.shared
     private var selectedTab: DesktopTab { get { navigation.selectedTab } nonmutating set { navigation.selectedTab = newValue } }
@@ -424,7 +425,6 @@ struct ContentView: View {
     private var heading: String {
         switch selectedTab {
         case .files: return "Phone files"
-        case .mirror: return "Screen mirroring"
         case .camera: return "Phone camera"
         case .settings: return "Connection settings"
         case .connection: break
@@ -444,7 +444,6 @@ struct ContentView: View {
     private var description: String {
         switch selectedTab {
         case .files: return "Browse, preview, download and upload files with phone approval."
-        case .mirror: return "View your phone screen after approving the phone's screen-sharing request."
         case .camera: return "Watch your phone camera after granting access on the phone."
         case .settings: return "Choose optional data sharing before starting a new connection."
         case .connection: break
@@ -470,19 +469,32 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     Text(selectedTab == .settings ? "PREFERENCES" :
-                         selectedTab == .connection ? "DEVICE OVERVIEW" : "PHONE TOOLS")
+                         selectedTab == .connection ? "PAIR YOUR PHONE" : "WORKSPACE")
                         .font(.system(size: 10, weight: .semibold))
                         .tracking(1.6)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(session.connected ? Color.green : session.running ? Color.orange : Color.secondary)
-                            .frame(width: 7, height: 7)
-                        Text(session.connected ? "Connected" : session.running ? "Pairing" : "Offline")
+                    Menu {
+                        Text(session.connected ? "Phone connected over local Wi-Fi" : session.running ? "Pairing in progress" : "No connected phone")
+                        if session.connected {
+                            Button("Open received files") { session.openDownloads() }
+                        }
+                        if session.running {
+                            Divider()
+                            Button("Disconnect phone") { session.disconnect() }
+                        }
+                    } label: {
+                        HStack(spacing: 7) {
+                            Circle()
+                                .fill(session.connected ? Color.green : session.running ? Color.orange : Color.secondary)
+                                .frame(width: 8, height: 8)
+                            Text(session.connected ? "Phone connected" : session.running ? "Pairing…" : "Not connected")
+                        }
+                        .font(.system(size: 12, weight: .medium))
                     }
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .accessibilityLabel("Phone connection status")
                 }
                 .padding(.bottom, 18)
                 Text(heading)
@@ -494,11 +506,8 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Group {
                     switch selectedTab {
-                    case .connection:
-                        if session.connected { connectedDashboard }
-                        else { connectionCard }
+                    case .connection: connectionCard
                     case .files: PhoneFilesView(connected: session.connected)
-                    case .mirror: PhoneMediaView(connected: session.connected, mode: .screen)
                     case .camera: PhoneMediaView(connected: session.connected, mode: .camera)
                     case .settings: settingsCard
                     }
@@ -513,8 +522,10 @@ struct ContentView: View {
         .frame(minWidth: 870, idealWidth: 950, minHeight: 600, idealHeight: 660)
         .background(Color(nsColor: .windowBackgroundColor))
         .onChange(of: session.connected) { isConnected in
-            if !isConnected && selectedTab != .settings { selectedTab = .connection }
+            if isConnected { selectedTab = .files }
+            else if selectedTab != .settings { selectedTab = .connection }
         }
+        .onAppear { if session.connected && selectedTab == .connection { selectedTab = .files } }
     }
 
     private var sidebar: some View {
@@ -542,9 +553,23 @@ struct ContentView: View {
                         .tracking(1.2)
                         .foregroundStyle(.secondary)
                         .padding(.bottom, 12)
-                    tabButton(.connection, title: "Connection", icon: "iphone.radiowaves.left.and.right")
+                    if !session.connected {
+                        tabButton(.connection, title: "Connect phone", icon: "iphone.radiowaves.left.and.right")
+                    }
                     tabButton(.files, title: "Phone files", icon: "folder")
-                    tabButton(.mirror, title: "Mirror screen", icon: "rectangle.on.rectangle")
+                    Button {
+                        openWindow(id: "phone-mirror")
+                    } label: {
+                        Label("Mirror screen", systemImage: "rectangle.on.rectangle")
+                            .font(.system(size: 13, weight: .medium))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 9)
+                            .padding(.horizontal, 12)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!session.connected)
+                    .foregroundStyle(session.connected ? .primary : .tertiary)
+                    .padding(.bottom, 4)
                     tabButton(.camera, title: "Phone camera", icon: "camera")
                     tabButton(.settings, title: "Settings", icon: "gearshape")
 
@@ -591,100 +616,6 @@ struct ContentView: View {
         .disabled(!session.connected && tab != .connection && tab != .settings)
         .foregroundStyle(!session.connected && tab != .connection && tab != .settings ? .tertiary : .primary)
         .padding(.bottom, 4)
-    }
-
-    private var connectedDashboard: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .center, spacing: 16) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 34))
-                    .foregroundStyle(.green)
-                    .frame(width: 57, height: 57)
-                    .background(Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(session.recentTransfer ? "File received" : "Connected and secure")
-                        .font(.system(size: 16, weight: .semibold))
-                    Text(session.recentTransfer ? "Your new file is in Received files." :
-                         "Your vivo phone is connected over local Wi-Fi.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 8)
-                Button("Disconnect") { session.disconnect() }
-                    .controlSize(.small)
-            }
-            .padding(20)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.75), in: RoundedRectangle(cornerRadius: 17))
-            .overlay(RoundedRectangle(cornerRadius: 17).strokeBorder(Color.primary.opacity(0.07)))
-
-            Text("QUICK ACTIONS")
-                .font(.system(size: 10, weight: .semibold))
-                .tracking(1.3)
-                .foregroundStyle(.secondary)
-
-            HStack(alignment: .top, spacing: 12) {
-                dashboardAction(.files, title: "Phone files", detail: "Browse, send and save files", symbol: "folder.fill")
-                dashboardAction(.mirror, title: "Mirror screen", detail: "View and control your phone", symbol: "rectangle.on.rectangle")
-                dashboardAction(.camera, title: "Phone camera", detail: "See a live camera preview", symbol: "camera.fill")
-            }
-
-            HStack(spacing: 10) {
-                Image(systemName: "tray.and.arrow.down")
-                    .font(.system(size: 16))
-                    .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Received files")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text("Files sent from your phone are saved in Downloads.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Open folder") { session.openDownloads() }
-                    .controlSize(.small)
-            }
-            .padding(.horizontal, 4)
-
-            Label("Screen and camera sharing may require approval on your phone.", systemImage: "lock.shield")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-
-    private func dashboardAction(_ tab: DesktopTab, title: String, detail: String, symbol: String) -> some View {
-        Button { selectedTab = tab } label: {
-            VStack(alignment: .leading, spacing: 11) {
-                HStack {
-                    Image(systemName: symbol)
-                        .font(.system(size: 21))
-                        .foregroundStyle(.tint)
-                        .frame(width: 43, height: 43)
-                        .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
-                    Spacer(minLength: 0)
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                Text(title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.primary)
-                Text(detail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxWidth: .infinity, minHeight: 129, alignment: .topLeading)
-            .padding(15)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.70), in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.08)))
-            .contentShape(RoundedRectangle(cornerRadius: 14))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(title)
-        .help(detail)
     }
 
     private var settingsCard: some View {
@@ -828,9 +759,23 @@ struct VOkitMacApp: App {
             ContentView()
         }
         .windowResizability(.contentSize)
+        Window("Phone mirroring", id: "phone-mirror") {
+            PhoneMirrorWindowView()
+        }
+        .defaultSize(width: 480, height: 760)
         MenuBarExtra("VOkit", systemImage: "iphone.radiowaves.left.and.right") {
             VOkitMenuView()
         }
+    }
+}
+
+private struct PhoneMirrorWindowView: View {
+    @ObservedObject private var session = PairSession.shared
+
+    var body: some View {
+        PhoneMediaView(connected: session.connected, mode: .screen)
+            .padding(16)
+            .frame(minWidth: 360, minHeight: 480)
     }
 }
 

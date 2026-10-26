@@ -14,7 +14,9 @@ enum PhoneMediaMode: Equatable {
 struct PhoneMediaView: View {
     let connected: Bool
     let mode: PhoneMediaMode
-    @ObservedObject private var model = PhoneMediaModel.shared
+    // Each viewer owns its media connection. A mirror window must not interrupt
+    // a camera preview open in the main workspace (or vice versa).
+    @StateObject private var model = PhoneMediaModel()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -23,6 +25,9 @@ struct PhoneMediaView: View {
                     Text("CAMERA")
                         .font(.system(size: 10, weight: .semibold))
                         .tracking(1.2)
+                        .foregroundStyle(.secondary)
+                    Text("In-app preview")
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
                     Picker("Camera", selection: $model.facing) {
@@ -143,7 +148,6 @@ private struct H264Preview: NSViewRepresentable {
 }
 
 private final class PhoneMediaModel: ObservableObject {
-    static let shared = PhoneMediaModel()
     @Published var status = "Connect the phone to start."
     @Published var facing = "rear"
     @Published var textToSend = ""
