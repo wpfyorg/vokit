@@ -169,6 +169,38 @@ func writeQR(ctx context.Context, uri, path string) error {
 	return nil
 }
 
+// pairFailureCode maps errors to a small, secret-free diagnostic vocabulary.
+// Never put raw network errors, addresses, or session values in event logs.
+func pairFailureCode(err error) string {
+	switch {
+	case err == nil:
+		return "unknown"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return "timeout"
+	}
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "certificate changed") || strings.Contains(message, "certificate pin"):
+		return "certificate_trust"
+	case strings.Contains(message, "TLS/network") || strings.Contains(message, "network/TLS") || strings.Contains(message, "WebSocket"):
+		return "network_or_tls"
+	case strings.Contains(message, "expired"):
+		return "expired"
+	case strings.Contains(message, "rejected") || strings.Contains(message, "incompatible"):
+		return "phone_rejected_or_incompatible"
+	case strings.Contains(message, "private LAN") || strings.Contains(message, "endpoint list") || strings.Contains(message, "no reachable phone") || strings.Contains(message, "requested phone IP"):
+		return "no_usable_lan_endpoint"
+	default:
+		return "protocol_or_response"
+	}
+}
+
 func runPair(ctx context.Context, args []string) error {
 	options, err := parsePairOptions(args)
 	if errors.Is(err, flag.ErrHelp) {
@@ -248,8 +280,12 @@ func runPair(ctx context.Context, args []string) error {
 		}
 	}
 	stage := func(name string) { emit(vivo.Event{Time: time.Now().UTC(), Stage: name}) }
+	failure := func(name string, err error) {
+		emit(vivo.Event{Time: time.Now().UTC(), Stage: name, Code: pairFailureCode(err)})
+	}
 	fmt.Fprintln(os.Stderr, "Native QR pairing test. Event log:", filepath.Join(dir, "events.jsonl"))
 	if err := cloud.Begin(ctx, session); err != nil {
+		failure("scan_bootstrap_failed", err)
 		return err
 	}
 	uri, err := session.QR(vivo.IndiaGateway)
@@ -266,12 +302,14 @@ func runPair(ctx context.Context, args []string) error {
 	emit(vivo.Event{Time: time.Now().UTC(), Stage: "qr_ready", QRPath: qrPath})
 	peer, err := cloud.Wait(ctx, session)
 	if err != nil {
+		failure("scan_result_failed", err)
 		return err
 	}
 	if peer.ConnectionID != "" {
 		session.ConnectionID = peer.ConnectionID
 	}
 	stage("scan_received")
+	emit(vivo.Event{Time: time.Now().UTC(), Stage: "phone_candidates_received", Count: len(peer.Addresses)})
 	if peer.IgnoredAddresses > 0 {
 		emit(vivo.Event{Time: time.Now().UTC(), Stage: "non_lan_addresses_ignored", Count: peer.IgnoredAddresses})
 	}
@@ -279,10 +317,12 @@ func runPair(ctx context.Context, args []string) error {
 	var capabilities map[string]bool
 	var phoneAddress netip.Addr
 	var lastErr error
+	attempts := 0
 	for _, address := range peer.Addresses {
 		if options.phone.IsValid() && address != options.phone {
 			continue
 		}
+		attempts++
 		pin := options.pin
 		var candidate *vivo.PhoneClient
 		if options.trustScanned {
@@ -303,6 +343,7 @@ func runPair(ctx context.Context, args []string) error {
 			phoneAddress = address
 			break
 		}
+		emit(vivo.Event{Time: time.Now().UTC(), Stage: "phone_negotiation_failed", Count: attempts, Code: pairFailureCode(err)})
 		pinned := candidate.CertificatePin() != ""
 		candidate.Close()
 		if options.trustScanned && pinned {
@@ -319,12 +360,17 @@ func runPair(ctx context.Context, args []string) error {
 	}
 	if client == nil {
 		if lastErr != nil {
+			failure("phone_candidates_unavailable", lastErr)
 			return lastErr
 		}
 		if options.phone.IsValid() {
-			return errors.New("scan result did not include the requested phone IP")
+			err := errors.New("scan result did not include the requested phone IP")
+			failure("phone_candidates_unavailable", err)
+			return err
 		}
-		return errors.New("no reachable phone was returned by this QR scan")
+		err := errors.New("no reachable phone was returned by this QR scan")
+		failure("phone_candidates_unavailable", err)
+		return err
 	}
 	defer client.Close()
 	emit(vivo.Event{Time: time.Now().UTC(), Stage: "phone_negotiated", Capabilities: capabilities})

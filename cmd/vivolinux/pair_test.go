@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"image/png"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +32,32 @@ func TestPairRejectsInvalidOptionsBeforeNetwork(t *testing.T) {
 	options, err = parsePairOptions([]string{"--trust-scanned-phone"})
 	if err != nil || !options.trustScanned || options.phone.IsValid() {
 		t.Fatal("explicit first-use policy rejected", err)
+	}
+}
+
+func TestPairFailureCodesAreBoundedAndSecretFree(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"cancelled", context.Canceled, "cancelled"},
+		{"deadline", context.DeadlineExceeded, "timeout"},
+		{"network timeout", &net.DNSError{Err: "private-name.example", IsTimeout: true}, "timeout"},
+		{"TLS failure", errors.New("phone TLS/network request failed; secret=never-log"), "network_or_tls"},
+		{"rendezvous TLS", errors.New("scan result: rendezvous network/TLS request failed"), "network_or_tls"},
+		{"pin mismatch", errors.New("phone certificate changed; pinned certificate mismatch"), "certificate_trust"},
+		{"rejection", errors.New("phone rejected version negotiation"), "phone_rejected_or_incompatible"},
+		{"expiry", errors.New("scan session expired"), "expired"},
+		{"empty candidates", errors.New("no reachable phone was returned by this QR scan"), "no_usable_lan_endpoint"},
+		{"protocol", errors.New("invalid response"), "protocol_or_response"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := pairFailureCode(test.err); got != test.want {
+				t.Fatalf("pairFailureCode() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
