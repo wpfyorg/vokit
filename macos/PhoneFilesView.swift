@@ -78,31 +78,66 @@ struct PhoneFilesView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(category.isEmpty ? "Folders" : categories.first(where: { $0.0 == category })?.1 ?? "Phone Files")
+                        .font(.title3.weight(.semibold))
+                    Text(connected ? (category.isEmpty ? directory : "Browse files on your phone") : "Connect your phone to browse files")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 8)
                 Picker("Collection", selection: Binding(get: { category }, set: { category = $0 })) {
                     ForEach(categories, id: \.0) { Text($0.1).tag($0.0) }
                 }
-                .frame(width: 150)
+                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 150)
                 if category.isEmpty {
-                    Button("Up") { openFolder(URL(fileURLWithPath: directory).deletingLastPathComponent().path) }
-                    Text(directory).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                    Button { openFolder(URL(fileURLWithPath: directory).deletingLastPathComponent().path) } label: {
+                        Label("Up", systemImage: "arrow.up")
+                    }
+                    .help("Open parent folder")
+                    .disabled(!connected || busy || directory == "/")
                 }
-                Spacer()
-                Button("Upload") { chooseUpload() }.disabled(!connected || busy)
-                Button("Download") { downloadSelected() }.disabled(!connected || busy || selectedFile == nil || selectedFile?.isDirectory == true)
-                Button("Preview") { previewSelected() }.disabled(!connected || busy || selectedFile == nil || selectedFile?.isDirectory == true)
             }
-            .padding()
+            .padding(.horizontal, 18).padding(.vertical, 13)
+            .background(.bar)
+
+            HStack(spacing: 8) {
+                Button { chooseUpload() } label: { Label("Upload", systemImage: "square.and.arrow.up") }
+                    .disabled(!connected || busy)
+                Divider().frame(height: 18)
+                Button { downloadSelected() } label: { Label("Download", systemImage: "arrow.down.to.line") }
+                    .disabled(!connected || busy || selectedFile == nil || selectedFile?.isDirectory == true)
+                Button { previewSelected() } label: { Label("Preview", systemImage: "eye") }
+                    .disabled(!connected || busy || selectedFile == nil || selectedFile?.isDirectory == true)
+                Spacer()
+                if let selectedFile {
+                    Text(selectedFile.fileName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 18).padding(.vertical, 9)
+            .background(Color(nsColor: .controlBackgroundColor))
 
             List(selection: Binding(get: { selection }, set: { selection = $0 })) {
                 ForEach(files) { file in
-                    HStack {
-                        Image(systemName: file.isDirectory ? "folder" : icon(for: file.fileName))
+                    HStack(spacing: 11) {
+                        Image(systemName: file.isDirectory ? "folder.fill" : icon(for: file.fileName))
+                            .font(.system(size: 16, weight: .medium))
                             .foregroundStyle(file.isDirectory ? Color.accentColor : Color.secondary)
-                        Text(file.fileName).lineLimit(1)
+                            .frame(width: 30, height: 30)
+                            .background(file.isDirectory ? Color.accentColor.opacity(0.1) : Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(file.fileName).font(.body).lineLimit(1)
+                            if file.isDirectory { Text("Folder").font(.caption2).foregroundStyle(.secondary) }
+                        }
                         Spacer()
-                        if !file.isDirectory { Text(ByteCountFormatter.string(fromByteCount: file.fileSize, countStyle: .file)).foregroundStyle(.secondary) }
+                        if !file.isDirectory {
+                            Text(ByteCountFormatter.string(fromByteCount: file.fileSize, countStyle: .file))
+                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                        if selection == file.savePath { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor) }
                     }
+                    .padding(.vertical, 3)
                     .contentShape(Rectangle())
                     .tag(file.savePath)
                     .onTapGesture(count: 2) {
@@ -124,16 +159,33 @@ struct PhoneFilesView: View {
                         .frame(maxWidth: .infinity)
                 }
             }
+            .overlay {
+                if files.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: emptySymbol)
+                            .font(.system(size: 30, weight: .regular))
+                            .foregroundStyle(isLoadError ? Color.orange : Color.secondary)
+                        Text(emptyTitle).font(.headline)
+                        Text(emptyMessage).font(.callout).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center).frame(maxWidth: 320)
+                        if connected && !busy && status.isEmpty {
+                            Button("Refresh") { loadFiles(reset: true) }.padding(.top, 3)
+                        }
+                    }
+                    .padding(24)
+                }
+            }
             .onChange(of: category) { _ in
                 loadFiles(reset: true)
             }
 
             HStack {
-                Text(status.isEmpty ? (connected ? " " : "Connect your phone to browse files") : status)
+                Text(status.isEmpty ? (connected ? "\(files.count) items" : "Phone disconnected") : status)
                     .foregroundStyle(.secondary).lineLimit(2)
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
-                Button("Refresh") { loadFiles(reset: true) }.disabled(!connected || busy)
+                Button { loadFiles(reset: true) } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.borderless).help("Refresh phone files").disabled(!connected || busy)
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
@@ -146,6 +198,31 @@ struct PhoneFilesView: View {
     }
 
     private var selectedFile: PhoneFile? { files.first { $0.savePath == selection } }
+
+    private var emptyTitle: String {
+        if !connected { return "Phone Not Connected" }
+        if busy { return "Loading Phone Files" }
+        if isLoadError { return "Couldn’t Load Files" }
+        return category.isEmpty ? "This Folder Is Empty" : "No Files Found"
+    }
+
+    private var emptySymbol: String {
+        if !connected { return "iphone.slash" }
+        if busy { return "arrow.triangle.2.circlepath" }
+        if isLoadError { return "exclamationmark.icloud" }
+        return category.isEmpty ? "folder" : "doc.on.doc"
+    }
+
+    private var emptyMessage: String {
+        if !connected { return "Connect your phone to browse and transfer files." }
+        if busy { return status.isEmpty ? "Reading the selected location…" : status }
+        if isLoadError { return status }
+        return category.isEmpty ? "There are no items in this location." : "Try another collection or refresh the list."
+    }
+
+    private var isLoadError: Bool {
+        !status.isEmpty && !status.contains("files and folders") && !status.hasPrefix("Reading")
+    }
 
     private func loadFiles(reset: Bool) {
         guard connected else { return }
