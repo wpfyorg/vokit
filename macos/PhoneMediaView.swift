@@ -321,15 +321,18 @@ private struct AnnexBVideoDecoder {
 
     mutating func append(_ bytes: Data) -> Bool {
         let units = nals(bytes)
+        var parametersChanged = false
         for unit in units {
             guard let first = unit.first else { continue }
             switch first & 0x1f {
-            case 7: sps = unit
-            case 8: pps = unit
+            case 7:
+                if sps != unit { sps = unit; parametersChanged = true }
+            case 8:
+                if pps != unit { pps = unit; parametersChanged = true }
             default: break
             }
         }
-        if format == nil, let sps, let pps {
+        if (format == nil || parametersChanged), let sps, let pps {
             var description: CMFormatDescription?
             let status = sps.withUnsafeBytes { spsBytes in
                 pps.withUnsafeBytes { ppsBytes in
@@ -342,7 +345,10 @@ private struct AnnexBVideoDecoder {
                     }
                 }
             }
-            if status == noErr { format = description }
+            if status == noErr {
+                if format != nil { layer.flush() }
+                format = description
+            }
         }
         guard let format else { return false }
         let pictures = units.filter { unit in guard let type = unit.first.map({ $0 & 0x1f }) else { return false }; return type == 1 || type == 5 }
