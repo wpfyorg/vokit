@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Network
 import SwiftUI
 
 enum PairPhase {
@@ -7,8 +8,18 @@ enum PairPhase {
 }
 
 @MainActor
-final class PairSession: ObservableObject {
+final class PairSession: NSObject, ObservableObject {
     static let shared = PairSession()
+
+    private override init() {
+        super.init()
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillTerminate),
+                                               name: NSApplication.willTerminateNotification, object: nil)
+    }
+
+    @objc private func appWillTerminate(_ notification: Notification) {
+        disconnect()
+    }
 
     @Published private(set) var status = "Disconnected"
     @Published private(set) var qrImage: NSImage?
@@ -21,19 +32,71 @@ final class PairSession: ObservableObject {
     private var process: Process?
     private var pairingDirectory: URL?
     private var disconnectRequested = false
+    private var localNetworkBrowser: NWBrowser?
+    private var localNetworkTimeout: DispatchWorkItem?
 
-    func connect() {
+    func connect(clipboard: Bool = false, notifications: Bool = false) {
         guard !running else { return }
         failureHint = nil
         recentTransfer = false
         disconnectRequested = false
         phase = .preparing
+        status = "Checking Local Network access…"
+        running = true
+
+        // Browsing for a Bonjour service causes the system privacy prompt before
+        // a pairing QR is generated. No service needs to be running on the LAN.
+        let browser = NWBrowser(for: .bonjour(type: "_vokit-auth._tcp", domain: nil), using: .tcp)
+        localNetworkBrowser = browser
+        browser.stateUpdateHandler = { [weak self, weak browser] state in
+            DispatchQueue.main.async {
+                guard let self, let browser, self.localNetworkBrowser === browser else { return }
+                switch state {
+                case .ready:
+                    self.cancelNetworkPreflight()
+                    self.startPairing(clipboard: clipboard, notifications: notifications)
+                case .failed(let error):
+                    self.failNetworkPreflight("Local Network access failed (\(error.localizedDescription)). Enable it in System Settings → Privacy & Security → Local Network.")
+                default:
+                    // .waiting can mean macOS is displaying its privacy prompt.
+                    break
+                }
+            }
+        }
+        let timeout = DispatchWorkItem { [weak self, weak browser] in
+            guard let self, let browser, self.localNetworkBrowser === browser else { return }
+            self.failNetworkPreflight("Local Network access was not confirmed. Allow VOkit in System Settings → Privacy & Security → Local Network, then retry.")
+        }
+        localNetworkTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 25, execute: timeout)
+        browser.start(queue: .global(qos: .userInitiated))
+    }
+
+    private func cancelNetworkPreflight() {
+        localNetworkTimeout?.cancel()
+        localNetworkTimeout = nil
+        localNetworkBrowser?.cancel()
+        localNetworkBrowser = nil
+    }
+
+    private func failNetworkPreflight(_ message: String) {
+        cancelNetworkPreflight()
+        running = false
+        connected = false
+        phase = .failed
+        status = "Local Network access needed"
+        failureHint = message
+    }
+
+    private func startPairing(clipboard: Bool, notifications: Bool) {
+        guard running, !disconnectRequested else { return }
 
         let fileManager = FileManager.default
         guard let cli = Bundle.main.resourceURL?.appendingPathComponent("vivolinux"),
               fileManager.isExecutableFile(atPath: cli.path) else {
             status = "VOkit backend missing. Rebuild the app."
             phase = .failed
+            running = false
             return
         }
 
@@ -46,14 +109,27 @@ final class PairSession: ObservableObject {
         } catch {
             status = "Cannot prepare private pairing data."
             phase = .failed
+            running = false
             return
         }
 
         let task = Process()
         task.executableURL = cli
         // This button explicitly authorizes first-use trust of the scanned phone.
-        task.arguments = ["pair", "--persistent", "--trust-scanned-phone",
+        task.arguments = ["pair", "--persistent", "--trust-scanned-phone", "--file-access",
                           "--state-dir", stateDir.path, "--receive-dir", receiveDir.path]
+        if clipboard || notifications {
+            guard let helper = Bundle.main.resourceURL?.appendingPathComponent("VOkitHelper.app/Contents/MacOS/VOkitHelper"),
+                  fileManager.isExecutableFile(atPath: helper.path) else {
+                status = "VOkit desktop helper missing. Rebuild the app."
+                phase = .failed
+                running = false
+                return
+            }
+            task.arguments?.append(contentsOf: ["--desktop-helper", helper.path])
+        }
+        if clipboard { task.arguments?.append("--clipboard") }
+        if notifications { task.arguments?.append("--notifications") }
         // Finder-launched GUI apps normally do not inherit Homebrew's PATH.
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = ["/opt/homebrew/bin", "/usr/local/bin", environment["PATH"] ?? ""].joined(separator: ":")
@@ -89,6 +165,7 @@ final class PairSession: ObservableObject {
         } catch {
             status = "Unable to start the VOkit backend."
             phase = .failed
+            running = false
             return
         }
         process = task
@@ -103,6 +180,14 @@ final class PairSession: ObservableObject {
     }
 
     func disconnect() {
+        if localNetworkBrowser != nil {
+            disconnectRequested = true
+            cancelNetworkPreflight()
+            running = false
+            phase = .idle
+            status = "Disconnected"
+            return
+        }
         guard let task = process else { return }
         disconnectRequested = true
         task.terminate()
@@ -263,8 +348,28 @@ private struct PairStep: View {
     }
 }
 
+private enum DesktopTab: String {
+    case connection, files, mirror, camera, settings
+}
+
+@MainActor
+private final class MacNavigationState: ObservableObject {
+    static let shared = MacNavigationState()
+    @Published var selectedTab: DesktopTab = .connection
+    @Published var pairClipboard = UserDefaults.standard.bool(forKey: "pairClipboard") {
+        didSet { UserDefaults.standard.set(pairClipboard, forKey: "pairClipboard") }
+    }
+    @Published var pairNotifications = UserDefaults.standard.bool(forKey: "pairNotifications") {
+        didSet { UserDefaults.standard.set(pairNotifications, forKey: "pairNotifications") }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject private var session = PairSession.shared
+    @ObservedObject private var navigation = MacNavigationState.shared
+    private var selectedTab: DesktopTab { get { navigation.selectedTab } nonmutating set { navigation.selectedTab = newValue } }
+    private var pairClipboard: Bool { get { navigation.pairClipboard } nonmutating set { navigation.pairClipboard = newValue } }
+    private var pairNotifications: Bool { get { navigation.pairNotifications } nonmutating set { navigation.pairNotifications = newValue } }
 
     private var progress: Int {
         switch session.phase {
@@ -277,6 +382,13 @@ struct ContentView: View {
     }
 
     private var heading: String {
+        switch selectedTab {
+        case .files: return "Phone files"
+        case .mirror: return "Screen mirroring"
+        case .camera: return "Phone camera"
+        case .settings: return "Connection settings"
+        case .connection: break
+        }
         switch session.phase {
         case .idle: return "Connect your phone"
         case .preparing: return "Preparing pairing"
@@ -290,13 +402,20 @@ struct ContentView: View {
     }
 
     private var description: String {
+        switch selectedTab {
+        case .files: return "Browse, preview, download and upload files with phone approval."
+        case .mirror: return "View your phone screen after approving the phone's screen-sharing request."
+        case .camera: return "Watch your phone camera after granting access on the phone."
+        case .settings: return "Choose optional data sharing before starting a new connection."
+        case .connection: break
+        }
         switch session.phase {
         case .idle: return "Pair a compatible vivo phone securely over Wi-Fi."
-        case .preparing: return "Creating a fresh secure pairing code…"
+        case .preparing: return "Checking Local Network privacy before showing the pairing code…"
         case .scanning: return "Open Office Kit on your phone and scan the code below."
         case .connecting: return "Code scanned. Locating your phone on the local network…"
         case .approval: return "Accept the connection request in Office Kit to continue."
-        case .connected: return "Ready for files shared from your phone."
+        case .connected: return "Your phone is ready for file sharing and live previews."
         case .stopping: return "Ending the active connection…"
         case .failed: return "The last attempt ended before a connection was established."
         }
@@ -332,15 +451,23 @@ struct ContentView: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                connectionCard
-                    .padding(.top, 22)
-                    .frame(maxHeight: .infinity, alignment: .top)
+                Group {
+                    switch selectedTab {
+                    case .connection: connectionCard
+                    case .files: PhoneFilesView(connected: session.connected)
+                    case .mirror: PhoneMediaView(connected: session.connected, mode: .screen)
+                    case .camera: PhoneMediaView(connected: session.connected, mode: .camera)
+                    case .settings: settingsCard
+                    }
+                }
+                .padding(.top, 20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 HStack(spacing: 6) {
                     Image(systemName: "lock.shield")
                     Text("Local Wi-Fi pairing · macOS 13+")
                     Spacer()
-                    Text("PREVIEW")
+                    Text("macOS")
                         .fontWeight(.semibold)
                 }
                 .font(.system(size: 10))
@@ -349,14 +476,18 @@ struct ContentView: View {
             .padding(30)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 815, height: 565)
+        .frame(minWidth: 900, idealWidth: 950, minHeight: 610, idealHeight: 660)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onDisappear { session.disconnect() }
+        .onChange(of: session.connected) { isConnected in
+            if !isConnected && selectedTab != .settings { selectedTab = .connection }
+        }
     }
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 10) {
                 Image(systemName: "iphone.radiowaves.left.and.right")
                     .font(.system(size: 20))
                     .foregroundStyle(.tint)
@@ -369,42 +500,92 @@ struct ContentView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
-            }
-            .padding(.bottom, 34)
+                    }
+                    .padding(.bottom, 34)
 
-            Text("GET CONNECTED")
+                    Text("WORKSPACE")
                 .font(.system(size: 10, weight: .bold))
                 .tracking(1.2)
                 .foregroundStyle(.secondary)
-                .padding(.bottom, 18)
-            PairStep(index: 1, title: "Open Office Kit", description: "Use your phone's Office Kit scanner.", progress: progress)
-                .padding(.bottom, 22)
-            PairStep(index: 2, title: "Scan and connect", description: "Keep both devices on the same Wi-Fi.", progress: progress)
-                .padding(.bottom, 22)
-            PairStep(index: 3, title: "Approve access", description: "Accept the prompt on your phone.", progress: progress)
+                .padding(.bottom, 12)
+                    tabButton(.connection, title: "Connection", icon: "iphone.radiowaves.left.and.right")
+                    tabButton(.files, title: "Phone files", icon: "folder")
+                    tabButton(.mirror, title: "Mirror screen", icon: "rectangle.on.rectangle")
+                    tabButton(.camera, title: "Phone camera", icon: "camera")
+                    tabButton(.settings, title: "Settings", icon: "gearshape")
 
-            Spacer()
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Incoming files", systemImage: "square.and.arrow.down")
-                    .font(.system(size: 13, weight: .semibold))
-                Text("Shared files arrive in Downloads / Vivo Office Kit.")
-                    .font(.system(size: 11))
+                    if !session.connected && selectedTab == .connection {
+                Divider().padding(.vertical, 20)
+                Text("PAIRING STEPS")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(1.2)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button { session.openDownloads() } label: {
-                    Label("Open received files", systemImage: "folder")
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.bottom, 16)
+                PairStep(index: 1, title: "Open Office Kit", description: "Use your phone's Office Kit scanner.", progress: progress)
+                    .padding(.bottom, 18)
+                PairStep(index: 2, title: "Scan and connect", description: "Keep both devices on the same Wi-Fi.", progress: progress)
+                    .padding(.bottom, 18)
+                PairStep(index: 3, title: "Approve access", description: "Accept the prompt on your phone.", progress: progress)
+                    }
                 }
-                .padding(.top, 6)
+                .padding(22)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+            Divider()
+            Button { session.openDownloads() } label: {
+                Label("Received files", systemImage: "square.and.arrow.down")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .padding(20)
         }
-        .padding(22)
         .frame(width: 252)
-        .frame(maxHeight: .infinity)
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private func tabButton(_ tab: DesktopTab, title: String, icon: String) -> some View {
+        Button { selectedTab = tab } label: {
+            Label(title, systemImage: icon)
+                .font(.system(size: 13, weight: selectedTab == tab ? .semibold : .medium))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .background(selectedTab == tab ? Color.accentColor.opacity(0.12) : .clear,
+                            in: RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+        .disabled(!session.connected && tab != .connection && tab != .settings)
+        .foregroundStyle(!session.connected && tab != .connection && tab != .settings ? .tertiary : .primary)
+        .padding(.bottom, 4)
+    }
+
+    private var settingsCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Phone permissions")
+                .font(.headline)
+            Toggle("Synchronize plain-text clipboard", isOn: Binding(get: { pairClipboard }, set: { pairClipboard = $0 }))
+            Text("Copies plain text between the Mac and phone while connected. Maximum 64 KiB per item.")
+                .font(.caption).foregroundStyle(.secondary)
+            Toggle("Forward phone notifications", isOn: Binding(get: { pairNotifications }, set: { pairNotifications = $0 }))
+            Text("Shows phone and connection notifications in macOS Notification Center after phone permission.")
+                .font(.caption).foregroundStyle(.secondary)
+            if session.running {
+                Label("Reconnect to apply these settings.", systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Divider()
+            Text("Local Network access")
+                .font(.headline)
+            Text("VOkit checks Local Network permission before generating a QR code. On first use, approve the macOS privacy prompt.")
+                .font(.caption).foregroundStyle(.secondary)
+            Button("Open Local Network settings") {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!)
+            }
+            Spacer()
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.65), in: RoundedRectangle(cornerRadius: 18))
     }
 
     private var connectionCard: some View {
@@ -478,7 +659,7 @@ struct ContentView: View {
                     .disabled(session.phase == .stopping)
                 } else {
                     Button {
-                        session.connect()
+                        session.connect(clipboard: pairClipboard, notifications: pairNotifications)
                     } label: {
                         Label(session.phase == .failed ? "Try pairing again" : "Start pairing",
                               systemImage: session.phase == .failed ? "arrow.clockwise" : "qrcode")
@@ -506,5 +687,29 @@ struct VOkitMacApp: App {
             ContentView()
         }
         .windowResizability(.contentSize)
+        MenuBarExtra("VOkit", systemImage: "iphone.radiowaves.left.and.right") {
+            VOkitMenuView()
+        }
+    }
+}
+
+private struct VOkitMenuView: View {
+    @ObservedObject private var session = PairSession.shared
+
+    var body: some View {
+        Text(session.connected ? "Phone connected" : session.running ? "Pairing…" : "Disconnected")
+        Button("Show VOkit") {
+            NSApp.activate(ignoringOtherApps: true)
+            for window in NSApp.windows where window.canBecomeKey { window.makeKeyAndOrderFront(nil) }
+        }
+        Button("Open received files") { session.openDownloads() }
+        if session.running {
+            Button("Disconnect phone") { session.disconnect() }
+        }
+        Divider()
+        Button("Quit VOkit") {
+            session.disconnect()
+            NSApp.terminate(nil)
+        }
     }
 }

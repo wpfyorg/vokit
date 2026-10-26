@@ -42,19 +42,34 @@ private struct PhoneFilePage: Decodable {
     let totalCount: Int64
 }
 
+@MainActor
+private final class PhoneFilesState: ObservableObject {
+    static let shared = PhoneFilesState()
+    @Published var category = "recent"
+    @Published var directory = "/storage/emulated/0"
+    @Published var files: [PhoneFile] = []
+    @Published var page = 0
+    @Published var hasMore = false
+    @Published var busy = false
+    @Published var status = ""
+    @Published var selection: String?
+    var pendingRefresh = false
+}
+
 /// Browse and transfer files through the active VOkit native phone session.
 @MainActor
 struct PhoneFilesView: View {
     let connected: Bool
 
-    @State private var category = "recent"
-    @State private var directory = "/storage/emulated/0"
-    @State private var files: [PhoneFile] = []
-    @State private var page = 0
-    @State private var hasMore = false
-    @State private var busy = false
-    @State private var status = ""
-    @State private var selection: String?
+    @ObservedObject private var state = PhoneFilesState.shared
+    private var category: String { get { state.category } nonmutating set { state.category = newValue } }
+    private var directory: String { get { state.directory } nonmutating set { state.directory = newValue } }
+    private var files: [PhoneFile] { get { state.files } nonmutating set { state.files = newValue } }
+    private var page: Int { get { state.page } nonmutating set { state.page = newValue } }
+    private var hasMore: Bool { get { state.hasMore } nonmutating set { state.hasMore = newValue } }
+    private var busy: Bool { get { state.busy } nonmutating set { state.busy = newValue } }
+    private var status: String { get { state.status } nonmutating set { state.status = newValue } }
+    private var selection: String? { get { state.selection } nonmutating set { state.selection = newValue } }
 
     private let categories: [(String, String)] = [
         ("", "Folders"), ("recent", "Recent"), ("images", "Images"), ("videos", "Videos"),
@@ -64,7 +79,7 @@ struct PhoneFilesView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Picker("Collection", selection: $category) {
+                Picker("Collection", selection: Binding(get: { category }, set: { category = $0 })) {
                     ForEach(categories, id: \.0) { Text($0.1).tag($0.0) }
                 }
                 .frame(width: 150)
@@ -79,7 +94,7 @@ struct PhoneFilesView: View {
             }
             .padding()
 
-            List(selection: $selection) {
+            List(selection: Binding(get: { selection }, set: { selection = $0 })) {
                 ForEach(files) { file in
                     HStack {
                         Image(systemName: file.isDirectory ? "folder" : icon(for: file.fileName))
@@ -125,7 +140,7 @@ struct PhoneFilesView: View {
         }
         .onChange(of: connected) { value in
             if value { loadFiles(reset: true) }
-            else { files = []; hasMore = false; status = "Phone disconnected" }
+            else { files = []; hasMore = false; state.pendingRefresh = false; status = "Phone disconnected" }
         }
         .onAppear { if connected { loadFiles(reset: true) } }
     }
@@ -133,7 +148,11 @@ struct PhoneFilesView: View {
     private var selectedFile: PhoneFile? { files.first { $0.savePath == selection } }
 
     private func loadFiles(reset: Bool) {
-        guard connected, !busy else { return }
+        guard connected else { return }
+        if busy {
+            if reset { state.pendingRefresh = true }
+            return
+        }
         if reset { files = []; page = 0; hasMore = false; selection = nil }
         let requestedPage = page
         busy = true
@@ -142,6 +161,15 @@ struct PhoneFilesView: View {
         args += category.isEmpty ? ["--path", directory] : ["--category", category]
         run(args, as: PhoneFilePage.self) { result in
             busy = false
+            if state.pendingRefresh {
+                state.pendingRefresh = false
+                if PairSession.shared.connected { loadFiles(reset: true) }
+                return
+            }
+            guard PairSession.shared.connected else {
+                files = []; hasMore = false; status = "Phone disconnected"
+                return
+            }
             switch result {
             case .success(let listing):
                 guard listing.dataList.count <= 2000 else { status = "Phone returned too many files."; return }
@@ -224,7 +252,8 @@ struct PhoneFilesView: View {
         guard ["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "mp4", "mov", "m4v", "3gp", "webm"].contains(ext) else {
             status = "Preview supports image and video files. Download other files to open them."; return
         }
-        let cache = FileManager.default.temporaryDirectory.appendingPathComponent("VOkitPreview-\(UUID().uuidString)")
+        let cache = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VOkitPreview-\(UUID().uuidString).\(ext)")
         busy = true; status = "Preparing preview…"
         run(["preview", "--remote", file.savePath, "--output", cache.path, "--page", String(file.page)] + categoryArg(file), as: PreviewReceipt.self) { result in
             busy = false
@@ -265,27 +294,31 @@ struct PhoneFilesView: View {
         process.standardInput = FileHandle.nullDevice
         let output = Pipe(); process.standardOutput = output
         process.standardError = FileHandle.nullDevice
-        process.terminationHandler = { task in
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { try process.run() }
+            catch {
+                DispatchQueue.main.async { completion(.failure(PhoneFilesError.operationFailed)) }
+                return
+            }
+            // Read while the subprocess runs: a large folder response can fill
+            // a pipe and prevent the process from ever exiting otherwise.
             let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             let result: Result<T, Error>
-            if task.terminationStatus != 0 {
+            if process.terminationStatus != 0 {
                 result = .failure(PhoneFilesError.operationFailed)
             } else {
                 do {
-                    let response = try JSONDecoder().decode(NativeResponse<T>.self, from: data)
-                    if let error = response.error { result = .failure(PhoneFilesError.remote(error)) }
-                    else if let value = response.result { result = .success(value) }
-                    else { result = .failure(PhoneFilesError.invalidResponse) }
+                    // The Go native CLI emits the result itself, not a
+                    // { result: ... } envelope.
+                    result = .success(try JSONDecoder().decode(T.self, from: data))
                 } catch { result = .failure(PhoneFilesError.invalidResponse) }
             }
             DispatchQueue.main.async { completion(result) }
         }
-        do { try process.run() }
-        catch { completion(.failure(PhoneFilesError.operationFailed)) }
     }
 }
 
-private struct NativeResponse<T: Decodable>: Decodable { let result: T?; let error: String? }
 private struct TransferReceipt: Decodable { let bytes: Int64; let sha256: String }
 private struct UploadReceipt: Decodable {
     let bytes: Int64

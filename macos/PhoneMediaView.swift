@@ -14,7 +14,7 @@ enum PhoneMediaMode: Equatable {
 struct PhoneMediaView: View {
     let connected: Bool
     let mode: PhoneMediaMode
-    @StateObject private var model = PhoneMediaModel()
+    @ObservedObject private var model = PhoneMediaModel.shared
 
     var body: some View {
         VStack(spacing: 10) {
@@ -27,10 +27,49 @@ struct PhoneMediaView: View {
                 .frame(maxWidth: 250)
                 .disabled(!connected)
             }
-            H264Preview(layer: model.layer)
-                .aspectRatio(mode == .screen ? 720.0 / 1560.0 : 16.0 / 9.0, contentMode: .fit)
+            GeometryReader { geometry in
+                H264Preview(layer: model.layer)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .contentShape(Rectangle())
+                    .gesture(DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            if mode == .screen && connected {
+                                model.pointer(at: value.location, in: geometry.size, ending: false)
+                            }
+                        }
+                        .onEnded { value in
+                            if mode == .screen && connected {
+                                model.pointer(at: value.location, in: geometry.size, ending: true)
+                            }
+                        })
+            }
+                .aspectRatio(mode == .screen ? Double(model.videoWidth) / Double(model.videoHeight) : 16.0 / 9.0,
+                             contentMode: .fit)
                 .background(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
+            if mode == .screen {
+                HStack(spacing: 12) {
+                    Button("Back") { model.navigate(key: 4) }
+                    Button("Home") { model.navigate(key: 3) }
+                    Button("Recent apps") { model.navigate(key: 187) }
+                    Picker("Quality", selection: Binding(get: { model.quality }, set: { model.setQuality($0) })) {
+                        Text("Auto").tag("auto")
+                        Text("480p").tag("480p")
+                        Text("720p").tag("720p")
+                        Text("1080p").tag("1080p")
+                    }
+                    .frame(width: 150)
+                    Spacer(minLength: 0)
+                }
+                .disabled(!connected || !model.inputReady)
+                HStack {
+                    TextField("Type text on phone", text: $model.textToSend)
+                        .onSubmit { model.sendText() }
+                    Button("Send text") { model.sendText() }
+                        .disabled(model.textToSend.isEmpty || !connected || !model.inputReady)
+                }
+                .disabled(!connected || !model.inputReady)
+            }
             Text(model.status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -59,14 +98,21 @@ private struct H264Preview: NSViewRepresentable {
     }
 }
 
-@MainActor
 private final class PhoneMediaModel: ObservableObject {
+    static let shared = PhoneMediaModel()
     @Published var status = "Connect the phone to start."
     @Published var facing = "rear"
+    @Published var textToSend = ""
+    @Published private(set) var videoWidth = 720
+    @Published private(set) var videoHeight = 1560
+    @Published private(set) var inputReady = false
+    @Published private(set) var quality = "720p"
     let layer = AVSampleBufferDisplayLayer()
     private var worker: DispatchWorkItem?
     private var socketFD: Int32 = -1
     private var generation = 0
+    private var pointerDown = false
+    private var lastPointerMove = Date.distantPast
 
     func configure(connected: Bool, mode: PhoneMediaMode) {
         stop()
@@ -74,7 +120,8 @@ private final class PhoneMediaModel: ObservableObject {
         generation += 1
         let run = generation
         status = mode == .screen ? "Requesting phone screen permission…" : "Requesting phone camera permission…"
-        let item = DispatchWorkItem { [weak self] in self?.run(generation: run, mode: mode, facing: self?.facing ?? "rear") }
+        let chosenFacing = facing
+        let item = DispatchWorkItem { [weak self] in self?.run(generation: run, mode: mode, facing: chosenFacing) }
         worker = item
         DispatchQueue.global(qos: .userInitiated).async(execute: item)
     }
@@ -84,7 +131,69 @@ private final class PhoneMediaModel: ObservableObject {
         worker?.cancel()
         worker = nil
         if socketFD >= 0 { shutdown(socketFD, SHUT_RDWR); socketFD = -1 }
+        inputReady = false
+        pointerDown = false
+        videoWidth = 720
+        videoHeight = 1560
         layer.flushAndRemoveImage()
+    }
+
+    func setQuality(_ choice: String) {
+        guard ["auto", "480p", "720p", "1080p"].contains(choice) else { return }
+        quality = choice
+        sendInput(["kind": "quality", "quality": choice])
+    }
+
+    func navigate(key: Int) {
+        guard [3, 4, 187].contains(key) else { return }
+        sendInput(["kind": "key", "action": "down", "keycode": key])
+        sendInput(["kind": "key", "action": "up", "keycode": key])
+    }
+
+    func sendText() {
+        let value = textToSend
+        guard !value.isEmpty, !value.contains("\0"), value.utf8.count <= 4096 else { return }
+        sendInput(["kind": "text", "text": value])
+        textToSend = ""
+    }
+
+    func pointer(at position: CGPoint, in size: CGSize, ending: Bool) {
+        guard inputReady, size.width > 0, size.height > 0 else { return }
+        let width = videoWidth, height = videoHeight
+        let videoRatio = CGFloat(width) / CGFloat(height)
+        let drawnWidth = min(size.width, size.height * videoRatio)
+        let drawnHeight = drawnWidth / videoRatio
+        let originX = (size.width - drawnWidth) / 2
+        let originY = (size.height - drawnHeight) / 2
+        if !pointerDown && (position.x < originX || position.x > originX + drawnWidth ||
+                            position.y < originY || position.y > originY + drawnHeight) { return }
+        let x = max(0, min(width - 1, Int((position.x - originX) * CGFloat(width) / drawnWidth)))
+        let y = max(0, min(height - 1, Int((position.y - originY) * CGFloat(height) / drawnHeight)))
+        let action: String
+        if ending { action = pointerDown ? "up" : "down" }
+        else if !pointerDown { action = "down" }
+        else {
+            if Date().timeIntervalSince(lastPointerMove) < 0.035 { return }
+            action = "move"
+            lastPointerMove = Date()
+        }
+        sendInput(["kind": "pointer", "action": action, "buttons": 1,
+                   "x": x, "y": y, "width": width, "height": height])
+        if ending {
+            if !pointerDown {
+                sendInput(["kind": "pointer", "action": "up", "buttons": 1,
+                           "x": x, "y": y, "width": width, "height": height])
+            }
+            pointerDown = false
+        } else { pointerDown = true }
+    }
+
+    private func sendInput(_ value: [String: Any]) {
+        guard inputReady, socketFD >= 0,
+              let data = try? JSONSerialization.data(withJSONObject: value), data.count <= 8191 else { return }
+        if !writeAll(socketFD, data + Data([10])) {
+            status = "Phone input unavailable. Reconnect and retry."
+        }
     }
 
     private func report(_ message: String, generation run: Int) {
@@ -97,6 +206,11 @@ private final class PhoneMediaModel: ObservableObject {
     private func run(generation run: Int, mode: PhoneMediaMode, facing: String) {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { report("Phone media service unavailable.", generation: run); return }
+        // A disconnected phone must never terminate the macOS app with SIGPIPE.
+        var noSigPipe: Int32 = 1
+        _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        var writeTimeout = timeval(tv_sec: 0, tv_usec: 200_000)
+        _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &writeTimeout, socklen_t(MemoryLayout<timeval>.size))
         defer {
             DispatchQueue.main.async { [weak self] in
                 if self?.socketFD == fd { self?.socketFD = -1 }
@@ -138,7 +252,6 @@ private final class PhoneMediaModel: ObservableObject {
         var buffer = Data()
         var videoStarted = false
         while true {
-            if worker?.isCancelled == true { break }
             var chunk = [UInt8](repeating: 0, count: 64 * 1024)
             let count = recv(fd, &chunk, chunk.count, 0)
             if count <= 0 { break }
@@ -157,6 +270,18 @@ private final class PhoneMediaModel: ObservableObject {
                     }
                 } else if kind == 1 || kind == 3 {
                     if let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] {
+                        if mode == .screen, kind == 1,
+                           let width = object["video_width"] as? Int,
+                           let height = object["video_height"] as? Int,
+                           width > 0, height > 0, width <= 16384, height <= 16384 {
+                            DispatchQueue.main.async { [weak self] in
+                                guard let self, self.generation == run else { return }
+                                self.videoWidth = width
+                                self.videoHeight = height
+                                self.inputReady = true
+                                self.setQuality(self.quality)
+                            }
+                        }
                         if let error = object["error"] as? String { report(error, generation: run) }
                         else if object["stage"] as? String == "permission_wait" { report("Approve access on the phone.", generation: run) }
                         else if object["stage"] as? String == "starting" { report("Starting phone video…", generation: run) }
@@ -164,7 +289,12 @@ private final class PhoneMediaModel: ObservableObject {
                 }
             }
         }
-        if !videoStarted { report("Phone video stopped. Check permission and reconnect.", generation: run) }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.generation == run else { return }
+            self.inputReady = false
+            self.status = videoStarted ? "Phone video ended. Reopen the preview to retry."
+                                       : "Phone video stopped. Check permission and reconnect."
+        }
     }
 }
 

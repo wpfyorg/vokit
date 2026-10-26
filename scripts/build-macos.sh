@@ -14,7 +14,7 @@ for tool in go swiftc; do
 done
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-app="$root/build/VOkit.app"
+app="${VOKIT_MACOS_APP_PATH:-$root/build/VOkit.app}"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$root/macos/Info.plist" "$app/Contents/Info.plist"
 (
@@ -22,7 +22,15 @@ cp "$root/macos/Info.plist" "$app/Contents/Info.plist"
   CGO_ENABLED=0 go build -trimpath -o "$app/Contents/Resources/vivolinux" ./cmd/vivolinux
 )
 swiftc -target "$(uname -m)-apple-macos13.0" -parse-as-library -O \
-  -framework AppKit -framework SwiftUI \
-  -o "$app/Contents/MacOS/VOkit" "$root/macos/VOkitMac.swift"
+  -framework AppKit -framework SwiftUI -framework Network \
+  -framework AVFoundation -framework VideoToolbox -framework CoreMedia \
+  -o "$app/Contents/MacOS/VOkit" "$root"/macos/*.swift
+helper="$app/Contents/Resources/VOkitHelper.app"
+mkdir -p "$helper/Contents/MacOS"
+cp "$root/macos/helper/Info.plist" "$helper/Contents/Info.plist"
+swiftc -target "$(uname -m)-apple-macos13.0" -parse-as-library -O \
+  -framework AppKit -framework UserNotifications \
+  -o "$helper/Contents/MacOS/VOkitHelper" \
+  "$root/macos/helper/PhoneDesktopHelper.swift"
 printf 'Built: %s\n' "$app"
 printf '%s\n' 'Install qrencode to use QR pairing: brew install qrencode'

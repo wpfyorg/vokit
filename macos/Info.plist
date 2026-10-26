@@ -11,7 +11,9 @@
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
-  <key>NSLocalNetworkUsageDescription</key><string>VOkit connects to a vivo phone on your local Wi-Fi network after you scan its pairing code.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>VOkit checks access to your local Wi-Fi network before you pair and connect to a vivo phone.</string>
+  <key>NSBonjourServices</key>
+  <array><string>_vokit-auth._tcp</string></array>
   <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
